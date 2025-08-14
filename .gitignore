@@ -5,3 +5,15 @@ dist/
 .env.local
 .vercel/
 .DS_Store
+node_modules
+.next
+out
+dist
+.env
+.env.local
+node_modules
+.next
+out
+dist
+.env
+.env.local

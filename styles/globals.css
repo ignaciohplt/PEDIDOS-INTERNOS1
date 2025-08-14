@@ -1,3 +1,16 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+@page { size: A4; margin: 12mm; }
+
+@media print {
+  .no-print { display: none !important; }
+  .only-print { display: block !important; }
+  .print-card { box-shadow: none !important; background: white !important; }
+  body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .page-break { page-break-before: always; }
+}
+
+@media screen {
+  .only-print { display: none !important; }
+}
