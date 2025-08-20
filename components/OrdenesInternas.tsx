@@ -14,13 +14,14 @@ interface Item {
 }
 interface OrderData {
   numero: string;
-  cliente: string;           // ⬅️ nuevo
+  cliente: string;
   fechaPedido: string;
   fechaEntrega: string;
   items: Item[];
   notas: string;
 }
 
+// ===== Utilidades =====
 const emptyItem = (): Item => ({
   id: uid(),
   unidades: "",
@@ -31,16 +32,22 @@ const emptyItem = (): Item => ({
 const today = () => new Date().toISOString().slice(0, 10);
 
 // IVA
-type IvaMode = "sin" | "con";
-const IVA_RATE = 0.21;
+type IvaMode = "sin" | "medio" | "con";
+const IVA_RATES = { sin: 0, medio: 0.105, con: 0.21 } as const;
+const getRate = (mode: IvaMode) => IVA_RATES[mode];
+const ivaShort = (mode: IvaMode) =>
+  mode === "sin" ? "sin IVA" : `c/IVA ${mode === "medio" ? "10,5%" : "21%"}`;
+const ivaLong = (mode: IvaMode) =>
+  mode === "sin" ? "Sin IVA" : `Con IVA ${mode === "medio" ? "10,5%" : "21%"}`;
 
 // ===== Componente =====
 export default function OrdenesInternas() {
   const [tab, setTab] = useState<"inicio"|"ordenes"|"planta">("inicio");
-  const [ivaMode, setIvaMode] = useState<IvaMode>("sin"); // ⬅️ nuevo
+  const [ivaMode, setIvaMode] = useState<IvaMode>("sin");
+
   const [data, setData] = useState<OrderData>(() => ({
     numero: `OI-${new Date().toISOString().slice(0,10).replace(/-/g,"")}-${String(Math.floor(Math.random()*900+100))}`,
-    cliente: "",  // ⬅️ nuevo
+    cliente: "",
     fechaPedido: today(),
     fechaEntrega: today(),
     items: [emptyItem()],
@@ -52,7 +59,9 @@ export default function OrdenesInternas() {
     const saved = localStorage.getItem("ordenInternaDraft");
     if (saved) { try { setData(JSON.parse(saved)); } catch {} }
     const savedIva = localStorage.getItem("ordenInternaIvaMode");
-    if (savedIva === "sin" || savedIva === "con") setIvaMode(savedIva);
+    if (savedIva === "sin" || savedIva === "medio" || savedIva === "con") {
+      setIvaMode(savedIva as IvaMode);
+    }
   }, []);
   useEffect(() => {
     localStorage.setItem("ordenInternaDraft", JSON.stringify(data));
@@ -61,16 +70,16 @@ export default function OrdenesInternas() {
     localStorage.setItem("ordenInternaIvaMode", ivaMode);
   }, [ivaMode]);
 
-  // Helpers IVA: mostrar/editar manteniendo precio neto en estado
-  const priceWithIva = (net: number) => net * (1 + IVA_RATE);
+  // Helpers IVA: guardamos NETO en estado; mostramos según modo
   const displayPrice = (netOrEmpty: number | "") =>
-    netOrEmpty === "" ? "" : (ivaMode === "con" ? priceWithIva(Number(netOrEmpty)) : Number(netOrEmpty));
+    netOrEmpty === "" ? "" : Number(netOrEmpty) * (1 + getRate(ivaMode));
 
   const parseInputToNet = (typed: string) => {
     if (typed === "") return "";
     const val = Number(typed);
     if (!isFinite(val)) return "";
-    return ivaMode === "con" ? Number((val / (1 + IVA_RATE)).toFixed(4)) : val;
+    const rate = getRate(ivaMode);
+    return rate > 0 ? Number((val / (1 + rate)).toFixed(4)) : val;
   };
 
   const netSubtotal = useMemo(() =>
@@ -78,14 +87,13 @@ export default function OrdenesInternas() {
       a + (Number(i.precio) || 0) * (Number(i.unidades) || 0), 0
     ), [data.items]);
 
-  const subtotalMostrar = ivaMode === "con" ? netSubtotal * (1 + IVA_RATE) : netSubtotal;
+  const subtotalMostrar = netSubtotal * (1 + getRate(ivaMode));
 
-  // Acciones tabla
+  // Acciones
   const addRow = () => setData(d => ({...d, items:[...d.items, emptyItem()]}));
   const removeRow = (id: string) => setData(d => ({...d, items: d.items.filter(i=>i.id!==id)}));
   const updateRow = (id: string, p: Partial<Item>) =>
     setData(d => ({...d, items: d.items.map(i => i.id===id? {...i, ...p}: i)}));
-
   const clearForm = () => {
     if (!confirm("¿Vaciar todos los campos?")) return;
     setData({
@@ -184,22 +192,24 @@ export default function OrdenesInternas() {
                   </Field>
                 </div>
 
-                {/* Toggle IVA arriba del precio */}
+                {/* Toggle IVA (Sin / 10,5% / 21%) */}
                 <div className="flex items-center justify-between mb-2">
                   <div className="text-sm text-neutral-600">
-                    Modo precios: <strong>{ivaMode === "con" ? "Con IVA 21%" : "Sin IVA"}</strong>
+                    Modo precios: <strong>{ivaLong(ivaMode)}</strong>
                   </div>
                   <div className="inline-flex rounded-xl border border-neutral-200 bg-neutral-50 p-1">
                     <button
                       onClick={()=>setIvaMode("sin")}
                       className={"px-3 py-1.5 rounded-lg text-sm " + (ivaMode==="sin" ? "bg-white shadow ring-1 ring-neutral-300" : "hover:bg-white/60")}
-                      title="Mostrar precios netos (sin IVA)"
                     >Sin IVA</button>
+                    <button
+                      onClick={()=>setIvaMode("medio")}
+                      className={"px-3 py-1.5 rounded-lg text-sm " + (ivaMode==="medio" ? "bg-white shadow ring-1 ring-neutral-300" : "hover:bg-white/60")}
+                    >10,5%</button>
                     <button
                       onClick={()=>setIvaMode("con")}
                       className={"px-3 py-1.5 rounded-lg text-sm " + (ivaMode==="con" ? "bg-white shadow ring-1 ring-neutral-300" : "hover:bg-white/60")}
-                      title="Mostrar precios con IVA 21%"
-                    >Con IVA (21%)</button>
+                    >21%</button>
                   </div>
                 </div>
 
@@ -211,7 +221,7 @@ export default function OrdenesInternas() {
                         <th className="p-2 w-40 text-left">Código interno</th>
                         <th className="p-2 text-left">Descripción</th>
                         <th className="p-2 w-40 text-left">
-                          Precio (u) {ivaMode === "con" ? "(con IVA)" : "(sin IVA)"}
+                          Precio (u) {ivaMode === "sin" ? "(sin IVA)" : `(con IVA ${ivaMode==="medio" ? "10,5%" : "21%"})`}
                         </th>
                         <th className="p-2 w-16"></th>
                       </tr>
@@ -247,7 +257,7 @@ export default function OrdenesInternas() {
                               className="w-40 rounded-lg border border-neutral-300 px-2 py-1"
                               value={displayPrice(it.precio) as number | ""}
                               onChange={(e)=>updateRow(it.id,{precio: parseInputToNet(e.target.value)})}
-                              placeholder={ivaMode==="con" ? "precio con IVA" : "precio sin IVA"}
+                              placeholder={ivaMode==="sin" ? "precio sin IVA" : `precio con IVA ${ivaMode==="medio" ? "10,5%" : "21%"}`}
                             />
                           </td>
                           <td className="p-2 text-right">
@@ -264,14 +274,14 @@ export default function OrdenesInternas() {
                     <textarea
                       className="w-full min-h-[90px] rounded-xl border border-neutral-300 px-3 py-2"
                       value={data.notas}
-                      onChange={(e)=>setData(d=>({...d, notas:e.target.value}))}
+                      onChange={(e)=>setData(d=>({...d, notas: e.target.value}))}
                       placeholder="Detalles técnicos, tolerancias, material, etc."
                     />
                   </Field>
                   <div className="flex items-end justify-end">
                     <div className="text-right bg-white border border-neutral-200 rounded-xl p-4 min-w-[260px]">
                       <div className="text-sm text-neutral-600">
-                        Subtotal {ivaMode==="con" ? "(con IVA)" : "(sin IVA)"}
+                        Subtotal {ivaMode==="sin" ? "(sin IVA)" : `(con IVA ${ivaMode==="medio" ? "10,5%" : "21%"})`}
                       </div>
                       <div className="text-2xl font-semibold tracking-tight">
                         ${" "}
@@ -280,7 +290,7 @@ export default function OrdenesInternas() {
                         })}
                       </div>
                       <div className="text-xs text-neutral-400 mt-1">
-                        {ivaMode==="con" ? "Incluye IVA 21%" : "Neto (sin IVA)"}
+                        {ivaLong(ivaMode)}
                       </div>
                     </div>
                   </div>
@@ -351,9 +361,10 @@ function WorkOrderPrint({
   showPrices: boolean;
   badgeClass: string;
 }) {
+  const rate = getRate(ivaMode);
   const unit = (netOrEmpty: number | "") =>
-    netOrEmpty === "" ? "" : (ivaMode === "con" ? (Number(netOrEmpty)*(1+IVA_RATE)) : Number(netOrEmpty));
-  const subtotalMostrar = ivaMode === "con" ? subtotalNet*(1+IVA_RATE) : subtotalNet;
+    netOrEmpty === "" ? "" : Number(netOrEmpty) * (1 + rate);
+  const subtotalMostrar = subtotalNet * (1 + rate);
 
   return (
     <div className="print-card bg-white border border-neutral-200 rounded-2xl p-6 shadow-sm">
@@ -361,13 +372,11 @@ function WorkOrderPrint({
         <div>
           <h2 className="text-lg font-semibold tracking-tight">Orden interna de trabajo</h2>
           <div className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs mt-1 ${badgeClass}`}>{titulo}</div>
-          <div className="text-xs text-neutral-500 mt-1">
-            {ivaMode === "con" ? "Mostrando precios con IVA 21%" : "Precios sin IVA"}
-          </div>
+          <div className="text-xs text-neutral-500 mt-1">{ivaLong(ivaMode)}</div>
         </div>
         <div className="text-sm">
           <Row k="N°:" v={data.numero || "—"} />
-          <Row k="Cliente:" v={data.cliente || "—"} /> {/* ⬅️ nuevo en impresión */}
+          <Row k="Cliente:" v={data.cliente || "—"} />
           <Row k="Fecha pedido:" v={fmtDate(data.fechaPedido)} />
           <Row k="Fecha entrega:" v={fmtDate(data.fechaEntrega)} />
         </div>
@@ -379,7 +388,11 @@ function WorkOrderPrint({
             <th className="py-2 text-left w-24">Unidades</th>
             <th className="py-2 text-left w-40">Código interno</th>
             <th className="py-2 text-left">Descripción</th>
-            {showPrices && <th className="py-2 text-left w-32">Precio (u) {ivaMode==="con"?"(c/IVA)":"(s/IVA)"}</th>}
+            {showPrices && (
+              <th className="py-2 text-left w-32">
+                Precio (u) {ivaMode==="sin" ? "(s/IVA)" : `(c/IVA ${ivaMode==="medio" ? "10,5%" : "21%"})`}
+              </th>
+            )}
           </tr>
         </thead>
         <tbody>
@@ -406,7 +419,9 @@ function WorkOrderPrint({
         <div className="flex items-end justify-end">
           {showPrices ? (
             <div className="text-right border border-neutral-200 rounded-xl p-3 min-w-[220px]">
-              <div className="text-sm text-neutral-600">Subtotal {ivaMode==="con" ? "(c/IVA)" : "(s/IVA)"}</div>
+              <div className="text-sm text-neutral-600">
+                Subtotal {ivaMode==="sin" ? "(s/IVA)" : `(c/IVA ${ivaMode==="medio" ? "10,5%" : "21%"})`}
+              </div>
               <div className="text-xl font-semibold">
                 ${" "}{subtotalMostrar.toLocaleString("es-AR",{minimumFractionDigits:2, maximumFractionDigits:2})}
               </div>
