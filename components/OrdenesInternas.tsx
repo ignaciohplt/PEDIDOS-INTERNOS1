@@ -29,14 +29,24 @@ const emptyItem = (): Item => ({
   descripcion: "",
   precio: "",
 });
-const today = () => new Date().toISOString().slice(0, 10);
+const todayStr = () => {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${y}${m}${dd}`;
+};
+const fmtVNumber = (yyyymmdd: string, seq: number) =>
+  `V-${yyyymmdd} -${String(seq).padStart(2, "0")}`;
+
+// Claves de LS para la secuencia diaria de impresión
+const LS_SEQ_KEY = "ordenInternaPrintSeq";
+type SeqState = { date: string; seq: number };
 
 // IVA
 type IvaMode = "sin" | "medio" | "con";
 const IVA_RATES = { sin: 0, medio: 0.105, con: 0.21 } as const;
 const getRate = (mode: IvaMode) => IVA_RATES[mode];
-const ivaShort = (mode: IvaMode) =>
-  mode === "sin" ? "sin IVA" : `c/IVA ${mode === "medio" ? "10,5%" : "21%"}`;
 const ivaLong = (mode: IvaMode) =>
   mode === "sin" ? "Sin IVA" : `Con IVA ${mode === "medio" ? "10,5%" : "21%"}`;
 
@@ -45,30 +55,63 @@ export default function OrdenesInternas() {
   const [tab, setTab] = useState<"inicio"|"ordenes"|"planta">("inicio");
   const [ivaMode, setIvaMode] = useState<IvaMode>("sin");
 
-  const [data, setData] = useState<OrderData>(() => ({
-    numero: `OI-${new Date().toISOString().slice(0,10).replace(/-/g,"")}-${String(Math.floor(Math.random()*900+100))}`,
-    cliente: "",
-    fechaPedido: today(),
-    fechaEntrega: today(),
-    items: [emptyItem()],
-    notas: "",
-  }));
+  // Estado de la OI
+  const [data, setData] = useState<OrderData>(() => {
+    const d = todayStr();
+    return {
+      numero: fmtVNumber(d, 0),  // muestra -00 al iniciar el día
+      cliente: "",
+      fechaPedido: `${new Date().toISOString().slice(0,10)}`,
+      fechaEntrega: `${new Date().toISOString().slice(0,10)}`,
+      items: [emptyItem()],
+      notas: "",
+    };
+  });
 
-  // Persistencia local
+  // Secuencia diaria (para incrementar en cada impresión)
+  const [seqState, setSeqState] = useState<SeqState>(() => {
+    const d = todayStr();
+    try {
+      const raw = localStorage.getItem(LS_SEQ_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as SeqState;
+        if (parsed?.date === d) return parsed;     // mismo día, uso lo guardado
+      }
+    } catch {}
+    return { date: d, seq: 0 }; // arranca en -00
+  });
+
+  // Persistencia local de la OI e IVA
   useEffect(() => {
-    const saved = localStorage.getItem("ordenInternaDraft");
-    if (saved) { try { setData(JSON.parse(saved)); } catch {} }
-    const savedIva = localStorage.getItem("ordenInternaIvaMode");
-    if (savedIva === "sin" || savedIva === "medio" || savedIva === "con") {
-      setIvaMode(savedIva as IvaMode);
-    }
+    try {
+      const saved = localStorage.getItem("ordenInternaDraft");
+      if (saved) setData((prev) => ({ ...prev, ...JSON.parse(saved) }));
+      const savedIva = localStorage.getItem("ordenInternaIvaMode");
+      if (savedIva === "sin" || savedIva === "medio" || savedIva === "con") {
+        setIvaMode(savedIva as IvaMode);
+      }
+      // cargar secuencia si existe
+      const rawSeq = localStorage.getItem(LS_SEQ_KEY);
+      const d = todayStr();
+      if (rawSeq) {
+        const parsed = JSON.parse(rawSeq) as SeqState;
+        setSeqState(parsed.date === d ? parsed : { date: d, seq: 0 });
+      }
+      // asegurar que el número visible respete la secuencia del día
+      setData((prev) => ({ ...prev, numero: fmtVNumber(d, (JSON.parse(rawSeq || '{"seq":0}') as any).date === d ? (JSON.parse(rawSeq || '{"seq":0}') as any).seq : 0) }));
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
   useEffect(() => {
     localStorage.setItem("ordenInternaDraft", JSON.stringify(data));
   }, [data]);
   useEffect(() => {
     localStorage.setItem("ordenInternaIvaMode", ivaMode);
   }, [ivaMode]);
+  useEffect(() => {
+    localStorage.setItem(LS_SEQ_KEY, JSON.stringify(seqState));
+  }, [seqState]);
 
   // Helpers IVA: guardamos NETO en estado; mostramos según modo
   const displayPrice = (netOrEmpty: number | "") =>
@@ -86,7 +129,6 @@ export default function OrdenesInternas() {
     data.items.reduce((a, i) =>
       a + (Number(i.precio) || 0) * (Number(i.unidades) || 0), 0
     ), [data.items]);
-
   const subtotalMostrar = netSubtotal * (1 + getRate(ivaMode));
 
   // Acciones
@@ -96,14 +138,36 @@ export default function OrdenesInternas() {
     setData(d => ({...d, items: d.items.map(i => i.id===id? {...i, ...p}: i)}));
   const clearForm = () => {
     if (!confirm("¿Vaciar todos los campos?")) return;
+    const d = todayStr();
     setData({
-      numero:"", cliente:"",
-      fechaPedido: today(),
-      fechaEntrega: today(),
+      numero: fmtVNumber(d, 0),
+      cliente: "",
+      fechaPedido: new Date().toISOString().slice(0,10),
+      fechaEntrega: new Date().toISOString().slice(0,10),
       items:[emptyItem()],
       notas:""
     });
   };
+
+  // 👉 Lógica de impresión con incremento: -00 (inicio) → -01, -02, ...
+  async function handlePrintIncrement() {
+    const today = todayStr();
+
+    // si cambió el día, reseteo a 0
+    let currentSeq = seqState.date === today ? seqState.seq : 0;
+
+    // incrementar para esta impresión
+    const nextSeq = currentSeq + 1;       // -00 → imprime como -01
+    const newNumero = fmtVNumber(today, nextSeq);
+
+    // actualizar estado y LS
+    setSeqState({ date: today, seq: nextSeq });
+    setData(d => ({ ...d, numero: newNumero }));
+
+    // asegurar que React pinte el nuevo número antes de imprimir
+    await new Promise((r) => setTimeout(r, 40));
+    window.print();
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-sky-50 via-blue-50 to-white text-neutral-900">
@@ -167,11 +231,17 @@ export default function OrdenesInternas() {
                   <div className="flex gap-2">
                     <button onClick={addRow} className="px-3 py-2 rounded-xl border border-blue-200 text-blue-800 hover:bg-blue-50">+ Ítem</button>
                     <button onClick={clearForm} className="px-3 py-2 rounded-xl border border-rose-300 text-rose-700 hover:bg-rose-50">Vaciar</button>
-                    <button onClick={()=>window.print()} className="px-3 py-2 rounded-xl bg-blue-900 text-white hover:bg-blue-800">Imprimir / PDF</button>
+                    <button
+                      onClick={handlePrintIncrement}
+                      className="px-3 py-2 rounded-xl bg-blue-900 text-white hover:bg-blue-800"
+                      title="Imprimir y avanzar numeración diaria (V-YYYYMMDD -NN)"
+                    >
+                      Imprimir / PDF
+                    </button>
                   </div>
                 </div>
 
-                {/* Cabecera de datos: ahora con Cliente */}
+                {/* Cabecera de datos: con Cliente */}
                 <div className="grid md:grid-cols-4 gap-4 mb-4 mt-4">
                   <Field label="N° de pedido">
                     <input className="w-full rounded-xl border border-neutral-300 px-3 py-2"
