@@ -1,57 +1,100 @@
 'use client';
 import React, { useEffect, useMemo, useState } from "react";
 
-// ————————————————
-// Órdenes Internas con tabs + tema azul/celeste
-// Imprime SOLO: Copia Interna (con precios) y Copia Planta (sin precios)
-// ————————————————
-
 const uid = () => Math.random().toString(36).slice(2);
 
+// ===== Tipos =====
 interface Item {
   id: string;
   unidades: number | "";
   codInterno: string;
   descripcion: string;
+  /** Precio base (neto, sin IVA) almacenado en estado */
   precio: number | "";
 }
 interface OrderData {
   numero: string;
+  cliente: string;           // ⬅️ nuevo
   fechaPedido: string;
   fechaEntrega: string;
   items: Item[];
   notas: string;
 }
-const emptyItem = (): Item => ({ id: uid(), unidades: "", codInterno: "", descripcion: "", precio: "" });
+
+const emptyItem = (): Item => ({
+  id: uid(),
+  unidades: "",
+  codInterno: "",
+  descripcion: "",
+  precio: "",
+});
 const today = () => new Date().toISOString().slice(0, 10);
 
+// IVA
+type IvaMode = "sin" | "con";
+const IVA_RATE = 0.21;
+
+// ===== Componente =====
 export default function OrdenesInternas() {
   const [tab, setTab] = useState<"inicio"|"ordenes"|"planta">("inicio");
+  const [ivaMode, setIvaMode] = useState<IvaMode>("sin"); // ⬅️ nuevo
   const [data, setData] = useState<OrderData>(() => ({
     numero: `OI-${new Date().toISOString().slice(0,10).replace(/-/g,"")}-${String(Math.floor(Math.random()*900+100))}`,
+    cliente: "",  // ⬅️ nuevo
     fechaPedido: today(),
     fechaEntrega: today(),
     items: [emptyItem()],
     notas: "",
   }));
 
+  // Persistencia local
   useEffect(() => {
     const saved = localStorage.getItem("ordenInternaDraft");
     if (saved) { try { setData(JSON.parse(saved)); } catch {} }
+    const savedIva = localStorage.getItem("ordenInternaIvaMode");
+    if (savedIva === "sin" || savedIva === "con") setIvaMode(savedIva);
   }, []);
-  useEffect(() => { localStorage.setItem("ordenInternaDraft", JSON.stringify(data)); }, [data]);
+  useEffect(() => {
+    localStorage.setItem("ordenInternaDraft", JSON.stringify(data));
+  }, [data]);
+  useEffect(() => {
+    localStorage.setItem("ordenInternaIvaMode", ivaMode);
+  }, [ivaMode]);
 
-  const subtotal = useMemo(
-    () => data.items.reduce((a,i)=> a + (Number(i.precio)||0)*(Number(i.unidades)||0), 0),
-    [data.items]
-  );
+  // Helpers IVA: mostrar/editar manteniendo precio neto en estado
+  const priceWithIva = (net: number) => net * (1 + IVA_RATE);
+  const displayPrice = (netOrEmpty: number | "") =>
+    netOrEmpty === "" ? "" : (ivaMode === "con" ? priceWithIva(Number(netOrEmpty)) : Number(netOrEmpty));
 
+  const parseInputToNet = (typed: string) => {
+    if (typed === "") return "";
+    const val = Number(typed);
+    if (!isFinite(val)) return "";
+    return ivaMode === "con" ? Number((val / (1 + IVA_RATE)).toFixed(4)) : val;
+  };
+
+  const netSubtotal = useMemo(() =>
+    data.items.reduce((a, i) =>
+      a + (Number(i.precio) || 0) * (Number(i.unidades) || 0), 0
+    ), [data.items]);
+
+  const subtotalMostrar = ivaMode === "con" ? netSubtotal * (1 + IVA_RATE) : netSubtotal;
+
+  // Acciones tabla
   const addRow = () => setData(d => ({...d, items:[...d.items, emptyItem()]}));
   const removeRow = (id: string) => setData(d => ({...d, items: d.items.filter(i=>i.id!==id)}));
-  const updateRow = (id: string, p: Partial<Item>) => setData(d => ({...d, items: d.items.map(i => i.id===id? {...i, ...p}: i)}));
+  const updateRow = (id: string, p: Partial<Item>) =>
+    setData(d => ({...d, items: d.items.map(i => i.id===id? {...i, ...p}: i)}));
+
   const clearForm = () => {
     if (!confirm("¿Vaciar todos los campos?")) return;
-    setData({ numero:"", fechaPedido: today(), fechaEntrega: today(), items:[emptyItem()], notas:"" });
+    setData({
+      numero:"", cliente:"",
+      fechaPedido: today(),
+      fechaEntrega: today(),
+      items:[emptyItem()],
+      notas:""
+    });
   };
 
   return (
@@ -86,9 +129,10 @@ export default function OrdenesInternas() {
           {tab==="inicio" && (
             <section className="text-center">
               <div className="flex flex-col items-center justify-center py-10">
-                <img src="/logo-himetal.png" alt="HIMETAL S.A." className="w-[520px] h-auto object-contain" />
-
-                <p className="mt-6 max-w-prose text-center text-neutral-600">Bienvenido a la aplicación de Órdenes Internas y Gestión de Planta.</p>
+                <img src="/logo-himetal.png" alt="HIMETAL S.A." className="max-h-40 w-auto drop-shadow-md" />
+                <p className="mt-6 max-w-prose text-center text-neutral-600">
+                  Bienvenido a la aplicación de Órdenes Internas y Gestión de Planta.
+                </p>
               </div>
               <div className="grid gap-4 sm:grid-cols-2">
                 <a onClick={()=>setTab("ordenes")}
@@ -119,10 +163,16 @@ export default function OrdenesInternas() {
                   </div>
                 </div>
 
-                <div className="grid md:grid-cols-3 gap-4 mb-4 mt-4">
+                {/* Cabecera de datos: ahora con Cliente */}
+                <div className="grid md:grid-cols-4 gap-4 mb-4 mt-4">
                   <Field label="N° de pedido">
                     <input className="w-full rounded-xl border border-neutral-300 px-3 py-2"
                       value={data.numero} onChange={e=>setData(d=>({...d, numero:e.target.value}))}/>
+                  </Field>
+                  <Field label="Cliente">
+                    <input className="w-full rounded-xl border border-neutral-300 px-3 py-2"
+                      value={data.cliente} onChange={e=>setData(d=>({...d, cliente:e.target.value}))}
+                      placeholder="Nombre del cliente" />
                   </Field>
                   <Field label="Fecha de pedido">
                     <input type="date" className="w-full rounded-xl border border-neutral-300 px-3 py-2"
@@ -134,6 +184,25 @@ export default function OrdenesInternas() {
                   </Field>
                 </div>
 
+                {/* Toggle IVA arriba del precio */}
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-sm text-neutral-600">
+                    Modo precios: <strong>{ivaMode === "con" ? "Con IVA 21%" : "Sin IVA"}</strong>
+                  </div>
+                  <div className="inline-flex rounded-xl border border-neutral-200 bg-neutral-50 p-1">
+                    <button
+                      onClick={()=>setIvaMode("sin")}
+                      className={"px-3 py-1.5 rounded-lg text-sm " + (ivaMode==="sin" ? "bg-white shadow ring-1 ring-neutral-300" : "hover:bg-white/60")}
+                      title="Mostrar precios netos (sin IVA)"
+                    >Sin IVA</button>
+                    <button
+                      onClick={()=>setIvaMode("con")}
+                      className={"px-3 py-1.5 rounded-lg text-sm " + (ivaMode==="con" ? "bg-white shadow ring-1 ring-neutral-300" : "hover:bg-white/60")}
+                      title="Mostrar precios con IVA 21%"
+                    >Con IVA (21%)</button>
+                  </div>
+                </div>
+
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm border border-neutral-200 rounded-xl overflow-hidden">
                     <thead className="bg-neutral-100 text-neutral-700">
@@ -141,7 +210,9 @@ export default function OrdenesInternas() {
                         <th className="p-2 w-24 text-left">Unidades</th>
                         <th className="p-2 w-40 text-left">Código interno</th>
                         <th className="p-2 text-left">Descripción</th>
-                        <th className="p-2 w-32 text-left">Precio (u)</th>
+                        <th className="p-2 w-40 text-left">
+                          Precio (u) {ivaMode === "con" ? "(con IVA)" : "(sin IVA)"}
+                        </th>
                         <th className="p-2 w-16"></th>
                       </tr>
                     </thead>
@@ -149,20 +220,35 @@ export default function OrdenesInternas() {
                       {data.items.map(it=>(
                         <tr key={it.id} className="border-t border-neutral-200">
                           <td className="p-2">
-                            <input type="number" min={0} className="w-24 rounded-lg border border-neutral-300 px-2 py-1"
-                              value={it.unidades} onChange={e=>updateRow(it.id,{unidades:e.target.value===""? "": Number(e.target.value)})}/>
+                            <input
+                              type="number" min={0}
+                              className="w-24 rounded-lg border border-neutral-300 px-2 py-1"
+                              value={it.unidades}
+                              onChange={(e)=>updateRow(it.id,{unidades: e.target.value===""? "": Number(e.target.value)})}
+                            />
                           </td>
                           <td className="p-2">
-                            <input className="w-40 rounded-lg border border-neutral-300 px-2 py-1"
-                              value={it.codInterno} onChange={e=>updateRow(it.id,{codInterno:e.target.value})}/>
+                            <input
+                              className="w-40 rounded-lg border border-neutral-300 px-2 py-1"
+                              value={it.codInterno}
+                              onChange={(e)=>updateRow(it.id,{codInterno: e.target.value})}
+                            />
                           </td>
                           <td className="p-2">
-                            <input className="w-full rounded-lg border border-neutral-300 px-2 py-1"
-                              value={it.descripcion} onChange={e=>updateRow(it.id,{descripcion:e.target.value})}/>
+                            <input
+                              className="w-full rounded-lg border border-neutral-300 px-2 py-1"
+                              value={it.descripcion}
+                              onChange={(e)=>updateRow(it.id,{descripcion: e.target.value})}
+                            />
                           </td>
                           <td className="p-2">
-                            <input type="number" min={0} step={0.01} className="w-32 rounded-lg border border-neutral-300 px-2 py-1"
-                              value={it.precio} onChange={e=>updateRow(it.id,{precio:e.target.value===""? "": Number(e.target.value)})}/>
+                            <input
+                              type="number" min={0} step={0.01}
+                              className="w-40 rounded-lg border border-neutral-300 px-2 py-1"
+                              value={displayPrice(it.precio) as number | ""}
+                              onChange={(e)=>updateRow(it.id,{precio: parseInputToNet(e.target.value)})}
+                              placeholder={ivaMode==="con" ? "precio con IVA" : "precio sin IVA"}
+                            />
                           </td>
                           <td className="p-2 text-right">
                             <button onClick={()=>removeRow(it.id)} className="px-2 py-1 rounded-lg border border-neutral-300 hover:bg-neutral-100">×</button>
@@ -175,17 +261,27 @@ export default function OrdenesInternas() {
 
                 <div className="mt-4 grid md:grid-cols-2 gap-4">
                   <Field label="Notas internas">
-                    <textarea className="w-full min-h-[90px] rounded-xl border border-neutral-300 px-3 py-2"
-                      value={data.notas} onChange={e=>setData(d=>({...d, notas:e.target.value}))}
-                      placeholder="Detalles técnicos, tolerancias, material, etc."/>
+                    <textarea
+                      className="w-full min-h-[90px] rounded-xl border border-neutral-300 px-3 py-2"
+                      value={data.notas}
+                      onChange={(e)=>setData(d=>({...d, notas:e.target.value}))}
+                      placeholder="Detalles técnicos, tolerancias, material, etc."
+                    />
                   </Field>
                   <div className="flex items-end justify-end">
                     <div className="text-right bg-white border border-neutral-200 rounded-xl p-4 min-w-[260px]">
-                      <div className="text-sm text-neutral-600">Subtotal</div>
-                      <div className="text-2xl font-semibold tracking-tight">
-                        ${" "}{subtotal.toLocaleString("es-AR",{minimumFractionDigits:2, maximumFractionDigits:2})}
+                      <div className="text-sm text-neutral-600">
+                        Subtotal {ivaMode==="con" ? "(con IVA)" : "(sin IVA)"}
                       </div>
-                      <div className="text-xs text-neutral-400 mt-1">(Sólo se imprime en la copia interna)</div>
+                      <div className="text-2xl font-semibold tracking-tight">
+                        ${" "}
+                        {subtotalMostrar.toLocaleString("es-AR",{
+                          minimumFractionDigits: 2, maximumFractionDigits: 2
+                        })}
+                      </div>
+                      <div className="text-xs text-neutral-400 mt-1">
+                        {ivaMode==="con" ? "Incluye IVA 21%" : "Neto (sin IVA)"}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -193,16 +289,28 @@ export default function OrdenesInternas() {
 
               {/* ✅ Sólo esto se imprime */}
               <section className="mt-8 space-y-6">
-                <WorkOrderPrint titulo="COPIA INTERNA" data={data} showPrices subtotal={subtotal}
-                                 badgeClass="bg-green-50 text-green-700 ring-1 ring-green-200" />
+                <WorkOrderPrint
+                  titulo="COPIA INTERNA"
+                  data={data}
+                  ivaMode={ivaMode}
+                  subtotalNet={netSubtotal}
+                  showPrices
+                  badgeClass="bg-green-50 text-green-700 ring-1 ring-green-200"
+                />
                 <div className="page-break" />
-                <WorkOrderPrint titulo="COPIA PLANTA" data={data} showPrices={false} subtotal={subtotal}
-                                 badgeClass="bg-red-50 text-red-700 ring-1 ring-red-200" />
+                <WorkOrderPrint
+                  titulo="COPIA PLANTA"
+                  data={data}
+                  ivaMode={ivaMode}
+                  subtotalNet={netSubtotal}
+                  showPrices={false}
+                  badgeClass="bg-red-50 text-red-700 ring-1 ring-red-200"
+                />
               </section>
             </section>
           )}
 
-          {/* PLANTA (título rojo) */}
+          {/* PLANTA */}
           {tab==="planta" && (
             <section>
               <h2 className="text-2xl font-bold tracking-tight text-red-600">Planta</h2>
@@ -223,6 +331,7 @@ export default function OrdenesInternas() {
   );
 }
 
+// ===== Subcomponentes =====
 function Field({label, children}:{label:string; children:React.ReactNode}) {
   return (
     <div className="space-y-1">
@@ -233,23 +342,32 @@ function Field({label, children}:{label:string; children:React.ReactNode}) {
 }
 
 function WorkOrderPrint({
-  titulo, data, showPrices, subtotal, badgeClass,
+  titulo, data, ivaMode, subtotalNet, showPrices, badgeClass,
 }: {
   titulo: string;
   data: OrderData;
+  ivaMode: IvaMode;
+  subtotalNet: number;
   showPrices: boolean;
-  subtotal: number;
   badgeClass: string;
 }) {
+  const unit = (netOrEmpty: number | "") =>
+    netOrEmpty === "" ? "" : (ivaMode === "con" ? (Number(netOrEmpty)*(1+IVA_RATE)) : Number(netOrEmpty));
+  const subtotalMostrar = ivaMode === "con" ? subtotalNet*(1+IVA_RATE) : subtotalNet;
+
   return (
     <div className="print-card bg-white border border-neutral-200 rounded-2xl p-6 shadow-sm">
       <header className="flex items-start justify-between gap-6">
         <div>
           <h2 className="text-lg font-semibold tracking-tight">Orden interna de trabajo</h2>
           <div className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs mt-1 ${badgeClass}`}>{titulo}</div>
+          <div className="text-xs text-neutral-500 mt-1">
+            {ivaMode === "con" ? "Mostrando precios con IVA 21%" : "Precios sin IVA"}
+          </div>
         </div>
         <div className="text-sm">
           <Row k="N°:" v={data.numero || "—"} />
+          <Row k="Cliente:" v={data.cliente || "—"} /> {/* ⬅️ nuevo en impresión */}
           <Row k="Fecha pedido:" v={fmtDate(data.fechaPedido)} />
           <Row k="Fecha entrega:" v={fmtDate(data.fechaEntrega)} />
         </div>
@@ -261,7 +379,7 @@ function WorkOrderPrint({
             <th className="py-2 text-left w-24">Unidades</th>
             <th className="py-2 text-left w-40">Código interno</th>
             <th className="py-2 text-left">Descripción</th>
-            {showPrices && <th className="py-2 text-left w-32">Precio (u)</th>}
+            {showPrices && <th className="py-2 text-left w-32">Precio (u) {ivaMode==="con"?"(c/IVA)":"(s/IVA)"}</th>}
           </tr>
         </thead>
         <tbody>
@@ -272,7 +390,7 @@ function WorkOrderPrint({
               <td className="py-2 align-top">{it.descripcion}</td>
               {showPrices && (
                 <td className="py-2 align-top">
-                  {it.precio!=="" ? Number(it.precio).toLocaleString("es-AR",{minimumFractionDigits:2, maximumFractionDigits:2}) : ""}
+                  {unit(it.precio) !== "" ? Number(unit(it.precio)).toLocaleString("es-AR",{minimumFractionDigits:2, maximumFractionDigits:2}) : ""}
                 </td>
               )}
             </tr>
@@ -288,9 +406,9 @@ function WorkOrderPrint({
         <div className="flex items-end justify-end">
           {showPrices ? (
             <div className="text-right border border-neutral-200 rounded-xl p-3 min-w-[220px]">
-              <div className="text-sm text-neutral-600">Subtotal</div>
+              <div className="text-sm text-neutral-600">Subtotal {ivaMode==="con" ? "(c/IVA)" : "(s/IVA)"}</div>
               <div className="text-xl font-semibold">
-                ${" "}{subtotal.toLocaleString("es-AR",{minimumFractionDigits:2, maximumFractionDigits:2})}
+                ${" "}{subtotalMostrar.toLocaleString("es-AR",{minimumFractionDigits:2, maximumFractionDigits:2})}
               </div>
             </div>
           ) : (
@@ -307,6 +425,7 @@ function WorkOrderPrint({
     </div>
   );
 }
+
 function Row({k, v}:{k:string; v:string}) {
   return <div className="flex gap-3"><span className="text-neutral-600">{k}</span><span className="font-medium">{v}</span></div>;
 }
