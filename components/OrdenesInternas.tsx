@@ -3,6 +3,10 @@ import React, { useEffect, useMemo, useState } from "react";
 
 const uid = () => Math.random().toString(36).slice(2);
 
+// ======================= Config rápida =======================
+const ESTIMADORES = ["Nacho", "Pepo"] as const;
+type EstimadorId = typeof ESTIMADORES[number];
+
 // ===== Tipos =====
 interface Item {
   id: string;
@@ -29,6 +33,7 @@ const emptyItem = (): Item => ({
   descripcion: "",
   precio: "",
 });
+const todayIso = () => new Date().toISOString().slice(0, 10);
 const todayStr = () => {
   const d = new Date();
   const y = d.getFullYear();
@@ -39,11 +44,17 @@ const todayStr = () => {
 const fmtVNumber = (yyyymmdd: string, seq: number) =>
   `V-${yyyymmdd} -${String(seq).padStart(2, "0")}`;
 
-// Claves de LS para la secuencia diaria de impresión
-const LS_SEQ_KEY = "ordenInternaPrintSeq";
-type SeqState = { date: string; seq: number };
+// ===== LS Keys =====
+const LS_SEQ_KEY_OLD = "ordenInternaPrintSeq";                // anterior (global)
+const LS_SEQ_BY_USER_KEY = "ordenInternaPrintSeqByUser";      // nuevo (por persona)
+const LS_ESTIMADOR_KEY = "ordenInternaEstimador";
 
-// IVA
+// Estructura nueva del contador por persona
+type SeqByUserState = { date: string; counters: Record<string, number> };
+const getSeqFor = (state: SeqByUserState, estimador: EstimadorId, date: string) =>
+  state.date === date ? (state.counters[estimador] ?? 0) : 0;
+
+// ===== IVA =====
 type IvaMode = "sin" | "medio" | "con";
 const IVA_RATES = { sin: 0, medio: 0.105, con: 0.21 } as const;
 const getRate = (mode: IvaMode) => IVA_RATES[mode];
@@ -55,65 +66,81 @@ export default function OrdenesInternas() {
   const [tab, setTab] = useState<"inicio"|"ordenes"|"planta">("inicio");
   const [ivaMode, setIvaMode] = useState<IvaMode>("sin");
 
+  // quién presupuestó
+  const [estimador, setEstimador] = useState<EstimadorId>(ESTIMADORES[0]);
+
+  // contador por persona
+  const [seqByUser, setSeqByUser] = useState<SeqByUserState>({ date: todayStr(), counters: {} });
+
   // Estado de la OI
-  const [data, setData] = useState<OrderData>(() => {
-    const d = todayStr();
-    return {
-      numero: fmtVNumber(d, 0),  // muestra -00 al iniciar el día
-      cliente: "",
-      fechaPedido: `${new Date().toISOString().slice(0,10)}`,
-      fechaEntrega: `${new Date().toISOString().slice(0,10)}`,
-      items: [emptyItem()],
-      notas: "",
-    };
-  });
+  const [data, setData] = useState<OrderData>(() => ({
+    numero: fmtVNumber(todayStr(), 0),  // -00 al iniciar
+    cliente: "",
+    fechaPedido: todayIso(),
+    fechaEntrega: todayIso(),
+    items: [emptyItem()],
+    notas: "",
+  }));
 
-  // Secuencia diaria (para incrementar en cada impresión)
-  const [seqState, setSeqState] = useState<SeqState>(() => {
-    const d = todayStr();
-    try {
-      const raw = localStorage.getItem(LS_SEQ_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as SeqState;
-        if (parsed?.date === d) return parsed;     // mismo día, uso lo guardado
-      }
-    } catch {}
-    return { date: d, seq: 0 }; // arranca en -00
-  });
-
-  // Persistencia local de la OI e IVA
+  // ===== Persistencia inicial =====
   useEffect(() => {
     try {
-      const saved = localStorage.getItem("ordenInternaDraft");
-      if (saved) setData((prev) => ({ ...prev, ...JSON.parse(saved) }));
+      // estimador por defecto
+      const savedEst = localStorage.getItem(LS_ESTIMADOR_KEY);
+      if (savedEst && ESTIMADORES.includes(savedEst as EstimadorId)) {
+        setEstimador(savedEst as EstimadorId);
+      }
+
+      // migrar contador viejo (global) → nuevo por persona (para no perder conteo de hoy)
+      const d = todayStr();
+      const rawNew = localStorage.getItem(LS_SEQ_BY_USER_KEY);
+      const rawOld = localStorage.getItem(LS_SEQ_KEY_OLD);
+
+      let nextState: SeqByUserState | null = null;
+
+      if (rawNew) {
+        const parsed = JSON.parse(rawNew) as SeqByUserState;
+        nextState = parsed.date === d ? parsed : { date: d, counters: {} };
+      } else if (rawOld) {
+        const parsedOld = JSON.parse(rawOld) as { date: string; seq: number };
+        if (parsedOld?.date === d) {
+          // asigno el contador viejo al estimador actual (o primero)
+          const who = (savedEst && ESTIMADORES.includes(savedEst as EstimadorId))
+            ? (savedEst as EstimadorId) : ESTIMADORES[0];
+          nextState = { date: d, counters: { [who]: parsedOld.seq } };
+        }
+      }
+      if (!nextState) nextState = { date: d, counters: {} };
+      setSeqByUser(nextState);
+
+      // draft data
+      const savedDraft = localStorage.getItem("ordenInternaDraft");
+      if (savedDraft) {
+        setData(prev => ({ ...prev, ...JSON.parse(savedDraft) }));
+      }
+
+      // IVA
       const savedIva = localStorage.getItem("ordenInternaIvaMode");
       if (savedIva === "sin" || savedIva === "medio" || savedIva === "con") {
         setIvaMode(savedIva as IvaMode);
       }
-      // cargar secuencia si existe
-      const rawSeq = localStorage.getItem(LS_SEQ_KEY);
-      const d = todayStr();
-      if (rawSeq) {
-        const parsed = JSON.parse(rawSeq) as SeqState;
-        setSeqState(parsed.date === d ? parsed : { date: d, seq: 0 });
-      }
-      // asegurar que el número visible respete la secuencia del día
-      setData((prev) => ({ ...prev, numero: fmtVNumber(d, (JSON.parse(rawSeq || '{"seq":0}') as any).date === d ? (JSON.parse(rawSeq || '{"seq":0}') as any).seq : 0) }));
     } catch {}
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    localStorage.setItem("ordenInternaDraft", JSON.stringify(data));
-  }, [data]);
-  useEffect(() => {
-    localStorage.setItem("ordenInternaIvaMode", ivaMode);
-  }, [ivaMode]);
-  useEffect(() => {
-    localStorage.setItem(LS_SEQ_KEY, JSON.stringify(seqState));
-  }, [seqState]);
+  // guardar LS
+  useEffect(() => { localStorage.setItem("ordenInternaDraft", JSON.stringify(data)); }, [data]);
+  useEffect(() => { localStorage.setItem("ordenInternaIvaMode", ivaMode); }, [ivaMode]);
+  useEffect(() => { localStorage.setItem(LS_ESTIMADOR_KEY, estimador); }, [estimador]);
+  useEffect(() => { localStorage.setItem(LS_SEQ_BY_USER_KEY, JSON.stringify(seqByUser)); }, [seqByUser]);
 
-  // Helpers IVA: guardamos NETO en estado; mostramos según modo
+  // cuando cambia estimador o cambia el día → refresco número mostrado con el seq de esa persona
+  useEffect(() => {
+    const d = todayStr();
+    const seq = getSeqFor(seqByUser, estimador, d);
+    setData(prev => ({ ...prev, numero: fmtVNumber(d, seq) }));
+  }, [estimador, seqByUser.date]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ===== Helpers IVA: guardamos NETO en estado; mostramos según modo =====
   const displayPrice = (netOrEmpty: number | "") =>
     netOrEmpty === "" ? "" : Number(netOrEmpty) * (1 + getRate(ivaMode));
 
@@ -129,43 +156,49 @@ export default function OrdenesInternas() {
     data.items.reduce((a, i) =>
       a + (Number(i.precio) || 0) * (Number(i.unidades) || 0), 0
     ), [data.items]);
+
   const subtotalMostrar = netSubtotal * (1 + getRate(ivaMode));
 
-  // Acciones
+  // ===== Acciones =====
   const addRow = () => setData(d => ({...d, items:[...d.items, emptyItem()]}));
   const removeRow = (id: string) => setData(d => ({...d, items: d.items.filter(i=>i.id!==id)}));
   const updateRow = (id: string, p: Partial<Item>) =>
     setData(d => ({...d, items: d.items.map(i => i.id===id? {...i, ...p}: i)}));
+
   const clearForm = () => {
     if (!confirm("¿Vaciar todos los campos?")) return;
     const d = todayStr();
+    const seq = getSeqFor(seqByUser, estimador, d);
     setData({
-      numero: fmtVNumber(d, 0),
+      numero: fmtVNumber(d, seq),
       cliente: "",
-      fechaPedido: new Date().toISOString().slice(0,10),
-      fechaEntrega: new Date().toISOString().slice(0,10),
+      fechaPedido: todayIso(),
+      fechaEntrega: todayIso(),
       items:[emptyItem()],
       notas:""
     });
   };
 
-  // 👉 Lógica de impresión con incremento: -00 (inicio) → -01, -02, ...
+  // 👉 Imprimir: incrementa SOLO el contador del estimador elegido
   async function handlePrintIncrement() {
-    const today = todayStr();
+    const d = todayStr();
 
-    // si cambió el día, reseteo a 0
-    let currentSeq = seqState.date === today ? seqState.seq : 0;
+    setSeqByUser(prev => {
+      // reset si cambió el día
+      const base: SeqByUserState = prev.date === d ? prev : { date: d, counters: {} };
+      const current = base.counters[estimador] ?? 0;
+      const next = current + 1;
+      const nextState: SeqByUserState = {
+        date: d,
+        counters: { ...base.counters, [estimador]: next }
+      };
+      // actualizo número visible para que la impresión salga con el nuevo
+      setData(old => ({ ...old, numero: fmtVNumber(d, next) }));
+      return nextState;
+    });
 
-    // incrementar para esta impresión
-    const nextSeq = currentSeq + 1;       // -00 → imprime como -01
-    const newNumero = fmtVNumber(today, nextSeq);
-
-    // actualizar estado y LS
-    setSeqState({ date: today, seq: nextSeq });
-    setData(d => ({ ...d, numero: newNumero }));
-
-    // asegurar que React pinte el nuevo número antes de imprimir
-    await new Promise((r) => setTimeout(r, 40));
+    // espero un "tick" para que React pinte el nuevo número
+    await new Promise(r => setTimeout(r, 40));
     window.print();
   }
 
@@ -234,15 +267,15 @@ export default function OrdenesInternas() {
                     <button
                       onClick={handlePrintIncrement}
                       className="px-3 py-2 rounded-xl bg-blue-900 text-white hover:bg-blue-800"
-                      title="Imprimir y avanzar numeración diaria (V-YYYYMMDD -NN)"
+                      title="Imprimir y avanzar numeración diaria (por persona)"
                     >
                       Imprimir / PDF
                     </button>
                   </div>
                 </div>
 
-                {/* Cabecera de datos: con Cliente */}
-                <div className="grid md:grid-cols-4 gap-4 mb-4 mt-4">
+                {/* Cabecera de datos: N°, Cliente, Fechas, Presupuestó */}
+                <div className="grid md:grid-cols-5 gap-4 mb-4 mt-4">
                   <Field label="N° de pedido">
                     <input className="w-full rounded-xl border border-neutral-300 px-3 py-2"
                       value={data.numero} onChange={e=>setData(d=>({...d, numero:e.target.value}))}/>
@@ -259,6 +292,19 @@ export default function OrdenesInternas() {
                   <Field label="Fecha de entrega">
                     <input type="date" className="w-full rounded-xl border border-neutral-300 px-3 py-2"
                       value={data.fechaEntrega} onChange={e=>setData(d=>({...d, fechaEntrega:e.target.value}))}/>
+                  </Field>
+                  <Field label="Presupuestó">
+                    <div className="inline-flex rounded-xl border border-neutral-200 bg-neutral-50 p-1">
+                      {ESTIMADORES.map((p) => (
+                        <button
+                          key={p}
+                          onClick={()=>setEstimador(p)}
+                          className={"px-3 py-1.5 rounded-lg text-sm " + (estimador===p ? "bg-white shadow ring-1 ring-neutral-300" : "hover:bg-white/60")}
+                          type="button"
+                          title={p}
+                        >{p}</button>
+                      ))}
+                    </div>
                   </Field>
                 </div>
 
@@ -374,6 +420,7 @@ export default function OrdenesInternas() {
                   data={data}
                   ivaMode={ivaMode}
                   subtotalNet={netSubtotal}
+                  estimador={estimador}
                   showPrices
                   badgeClass="bg-green-50 text-green-700 ring-1 ring-green-200"
                 />
@@ -383,6 +430,7 @@ export default function OrdenesInternas() {
                   data={data}
                   ivaMode={ivaMode}
                   subtotalNet={netSubtotal}
+                  estimador={estimador}
                   showPrices={false}
                   badgeClass="bg-red-50 text-red-700 ring-1 ring-red-200"
                 />
@@ -422,12 +470,13 @@ function Field({label, children}:{label:string; children:React.ReactNode}) {
 }
 
 function WorkOrderPrint({
-  titulo, data, ivaMode, subtotalNet, showPrices, badgeClass,
+  titulo, data, ivaMode, subtotalNet, estimador, showPrices, badgeClass,
 }: {
   titulo: string;
   data: OrderData;
   ivaMode: IvaMode;
   subtotalNet: number;
+  estimador: EstimadorId;
   showPrices: boolean;
   badgeClass: string;
 }) {
@@ -447,6 +496,7 @@ function WorkOrderPrint({
         <div className="text-sm">
           <Row k="N°:" v={data.numero || "—"} />
           <Row k="Cliente:" v={data.cliente || "—"} />
+          <Row k="Presupuestó:" v={estimador} />
           <Row k="Fecha pedido:" v={fmtDate(data.fechaPedido)} />
           <Row k="Fecha entrega:" v={fmtDate(data.fechaEntrega)} />
         </div>
